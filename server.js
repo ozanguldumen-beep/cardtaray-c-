@@ -5,7 +5,6 @@ const fs = require('fs');
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
-
 app.use(express.json());
 app.use(express.static('public'));
 
@@ -22,7 +21,6 @@ function getConfig() {
     admin_pass: process.env.ADMIN_PASS || 'admin123'
   };
 }
-
 function saveConfig(cfg) { fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2)); }
 
 function adminAuth(req, res, next) {
@@ -42,7 +40,6 @@ app.get('/admin/config', adminAuth, (req, res) => {
     admin_user: cfg.admin_user
   });
 });
-
 app.post('/admin/config', adminAuth, (req, res) => {
   const cfg = getConfig();
   const { openai_key, bitrix_url, admin_user, new_pass } = req.body;
@@ -53,7 +50,6 @@ app.post('/admin/config', adminAuth, (req, res) => {
   saveConfig(cfg);
   res.json({ success: true });
 });
-
 app.delete('/admin/config/:key', adminAuth, (req, res) => {
   const cfg = getConfig();
   if (req.params.key === 'openai_key') cfg.openai_key = '';
@@ -61,7 +57,6 @@ app.delete('/admin/config/:key', adminAuth, (req, res) => {
   saveConfig(cfg);
   res.json({ success: true });
 });
-
 app.post('/admin/login', (req, res) => {
   const { user, pass } = req.body;
   const cfg = getConfig();
@@ -72,7 +67,7 @@ app.post('/admin/login', (req, res) => {
   }
 });
 
-// OCR
+// OCR - adres dahil
 app.post('/api/scan', upload.single('image'), async (req, res) => {
   try {
     const cfg = getConfig();
@@ -85,17 +80,16 @@ app.post('/api/scan', upload.single('image'), async (req, res) => {
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
       body: JSON.stringify({
         model: 'gpt-4o',
-        max_tokens: 400,
+        max_tokens: 500,
         messages: [{
           role: 'user',
           content: [
             { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } },
-            { type: 'text', text: 'Bu vizit kartındaki bilgileri JSON olarak çıkar. SADECE JSON döndür, başka hiçbir şey yazma. Format: {"name":"","title":"","company":"","phone":"","email":"","website":""}' }
+            { type: 'text', text: 'Bu vizit kartındaki tüm bilgileri JSON olarak çıkar. SADECE JSON döndür, başka hiçbir şey yazma. Format: {"name":"","title":"","company":"","phone":"","email":"","website":"","address":""}' }
           ]
         }]
       })
     });
-
     const data = await r.json();
     if (data.error) return res.status(500).json({ error: data.error.message });
     const raw = data.choices[0].message.content.replace(/```json|```/g, '').trim();
@@ -105,13 +99,13 @@ app.post('/api/scan', upload.single('image'), async (req, res) => {
   }
 });
 
-// Deal + Contact + Company oluştur
+// Deal + Contact + Company
 app.post('/api/deal', async (req, res) => {
   try {
     const cfg = getConfig();
-    const { name, title, company, phone, email, website, dealTitle, bitrixUrl } = req.body;
-    const BITRIX = (bitrixUrl || cfg.bitrix_url || '').replace(/\/$/, '');
-    if (!BITRIX) return res.status(400).json({ error: 'Bitrix24 Webhook URL girilmedi' });
+    const { name, title, company, phone, email, website, address, dealTitle, customerType, source } = req.body;
+    const BITRIX = cfg.bitrix_url.replace(/\/$/, '');
+    if (!BITRIX) return res.status(400).json({ error: 'Bitrix24 Webhook URL admin panelinde tanımlı değil.' });
 
     const domain = BITRIX.split('/rest/')[0];
 
@@ -124,46 +118,48 @@ app.post('/api/deal', async (req, res) => {
       return r.json();
     }
 
-    // 1. Company oluştur
+    // 1. Company
     let companyId = null;
     if (company) {
       const compRes = await bx('crm.company.add', {
         TITLE: company,
-        COMPANY_TYPE: 'CUSTOMER',
-        ...(website && { WEB: [{ VALUE: website, VALUE_TYPE: 'WORK' }] })
+        COMPANY_TYPE: customerType || 'CUSTOMER',
+        ...(website && { WEB: [{ VALUE: website, VALUE_TYPE: 'WORK' }] }),
+        ...(address && { ADDRESS: address }),
+        ...(source && { SOURCE_ID: source })
       });
       if (compRes.result) companyId = compRes.result;
     }
 
-    // 2. Contact oluştur
+    // 2. Contact
     let contactId = null;
     const nameParts = (name || '').trim().split(' ');
     const firstName = nameParts[0] || '';
     const lastName = nameParts.slice(1).join(' ') || '';
 
-    const contactFields = {
+    const contRes = await bx('crm.contact.add', {
       NAME: firstName,
       LAST_NAME: lastName,
       POST: title || '',
       ...(phone && { PHONE: [{ VALUE: phone, VALUE_TYPE: 'WORK' }] }),
       ...(email && { EMAIL: [{ VALUE: email, VALUE_TYPE: 'WORK' }] }),
       ...(website && { WEB: [{ VALUE: website, VALUE_TYPE: 'WORK' }] }),
+      ...(address && { ADDRESS: address }),
+      ...(source && { SOURCE_ID: source }),
       ...(companyId && { COMPANY_ID: companyId })
-    };
-
-    const contRes = await bx('crm.contact.add', contactFields);
+    });
     if (contRes.result) contactId = contRes.result;
 
-    // 3. Deal oluştur
-    const dealFields = {
+    // 3. Deal - Yeni Müşteri Adayı kolonuna at
+    const dealRes = await bx('crm.deal.add', {
       TITLE: dealTitle || [name, company].filter(Boolean).join(' - ') || 'Yeni Deal',
-      STAGE_ID: 'NEW',
-      COMMENTS: [title, website].filter(Boolean).join(' | '),
+      STAGE_ID: 'C1:NEW',
+      COMMENTS: [title, address, website].filter(Boolean).join(' | '),
+      ...(source && { SOURCE_ID: source }),
       ...(contactId && { CONTACT_ID: contactId }),
       ...(companyId && { COMPANY_ID: companyId })
-    };
+    });
 
-    const dealRes = await bx('crm.deal.add', dealFields);
     if (dealRes.result) {
       res.json({ success: true, dealId: dealRes.result, url: `${domain}/crm/deal/details/${dealRes.result}/` });
     } else {
