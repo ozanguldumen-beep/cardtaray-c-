@@ -141,6 +141,7 @@ app.post('/api/deal', async (req, res) => {
   try {
     const cfg = getConfig();
     const { name, title, company, phone, email, website, address, dealTitle, customerType, source } = req.body;
+    const [dealTypeId, contactTypeId] = (customerType || "").split("|");
     const BITRIX = cfg.bitrix_url.replace(/\/$/, '');
     if (!BITRIX) return res.status(400).json({ error: 'Bitrix24 Webhook URL admin panelinde tanımlı değil.' });
     const domain = BITRIX.split('/rest/')[0];
@@ -179,7 +180,7 @@ app.post('/api/deal', async (req, res) => {
       NAME: firstName,
       LAST_NAME: lastName,
       POST: title || '',
-      ...(customerType && { UF_CRM_6836B469670FA: customerType }),
+      ...(contactTypeId && { UF_CRM_6836B469670FA: contactTypeId }),
       ...(phone && { PHONE: [{ VALUE: phone, VALUE_TYPE: 'WORK' }] }),
       ...(email && { EMAIL: [{ VALUE: email, VALUE_TYPE: 'WORK' }] }),
       ...(website && { WEB: [{ VALUE: website, VALUE_TYPE: 'WORK' }] }),
@@ -195,7 +196,7 @@ app.post('/api/deal', async (req, res) => {
       STAGE_ID: 'C1:NEW',
       COMMENTS: [title, address, website].filter(Boolean).join(' | '),
       ...(source && { SOURCE_ID: source }),
-      ...(customerType && { UfCrm682498877deb3: customerType }),
+      ...(dealTypeId && { UF_CRM_682498877DEB3: dealTypeId }),
       ...(contactId && { CONTACT_ID: contactId }),
       ...(companyId && { COMPANY_ID: companyId })
     });
