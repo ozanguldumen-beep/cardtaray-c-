@@ -109,26 +109,32 @@ canvas { display: none; }
         <label>Müşteri Türü</label>
         <select id="f-ctype">
           <option value="">Seçilmedi</option>
-          <option value="CUSTOMER">Müşteri</option>
-          <option value="SUPPLIER">Tedarikçi</option>
-          <option value="COMPETITOR">Rakip</option>
-          <option value="PARTNER">İş Ortağı</option>
-          <option value="OTHER">Diğer</option>
+          <option value="CLIENT">Müşteri / Son Kullanıcı</option>
+          <option value="SUPPLIER">Bayi / Servis Yetkilisi</option>
+          <option value="PARTNER">Rakip Firma Yetkilisi</option>
+          <option value="UC_B8H6W2">İnşaat Firma Yetkilisi</option>
+          <option value="UC_8430SD">Proje Firması Yetkilisi</option>
+          <option value="UC_9A237W">Mimarlık Firması Yetkilisi</option>
+          <option value="UC_5N11JX">Elektrik Firma Yetkilisi</option>
+          <option value="UC_I6SBY9">Zayıf Akım Firma Yetkilisi</option>
         </select>
       </div>
       <div class="rf">
         <label>Kaynak</label>
         <select id="f-source">
           <option value="">Seçilmedi</option>
-          <option value="CALL">Telefon</option>
-          <option value="EMAIL">E-posta</option>
-          <option value="WEB">Web Sitesi</option>
+          <option value="PARTNER">Mevcut Müşteri (Bayi)</option>
+          <option value="FACE_TRACKER">Tarama Ziyareti</option>
+          <option value="RECOMMENDATION">Tanıdık Yönlendirmesi</option>
+          <option value="RC_GENERATOR">Öz Satış ( Satış Yöneticisi Portföyü )</option>
+          <option value="EMAIL">E-Mail</option>
+          <option value="CALL">Arama</option>
           <option value="ADVERTISING">Reklam</option>
-          <option value="PARTNER">İş Ortağı</option>
-          <option value="RECOMMENDATION">Tavsiye</option>
-          <option value="TRADE_SHOW">Fuar / Etkinlik</option>
-          <option value="SELF">Kart Tarayıcı</option>
-          <option value="OTHER">Diğer</option>
+          <option value="STORE">Çevrimiçi Mağaza</option>
+          <option value="BOOKING">Rezervasyon</option>
+          <option value="WEBFORM">CRM Form</option>
+          <option value="CALLBACK">Geri arama</option>
+          <option value="UC_Q1XV0L">Fuar, Seminer, Etkinlik</option>
         </select>
       </div>
     </div>
@@ -157,6 +163,7 @@ canvas { display: none; }
 <canvas id="cvs"></canvas>
 
 <script>
+
 function setStep(n) {
   [1,2,3,4].forEach(i => document.getElementById('step'+i).classList.remove('active'));
   document.getElementById('step'+n).classList.add('active');
