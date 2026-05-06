@@ -18,7 +18,8 @@ function getConfig() {
     google_vision_key: process.env.GOOGLE_VISION_KEY || '',
     bitrix_url: process.env.BITRIX_WEBHOOK_URL || '',
     admin_user: process.env.ADMIN_USER || 'admin',
-    admin_pass: process.env.ADMIN_PASS || 'admin123'
+    admin_pass: process.env.ADMIN_PASS || 'admin123',
+    sales_users: []
   };
 }
 function saveConfig(cfg) { fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2)); }
@@ -32,12 +33,14 @@ function adminAuth(req, res, next) {
   res.status(401).json({ error: 'Kullanıcı adı veya şifre hatalı' });
 }
 
+// Admin endpoints
 app.get('/admin/config', adminAuth, (req, res) => {
   const cfg = getConfig();
   res.json({
     google_vision_key: cfg.google_vision_key ? '***' + cfg.google_vision_key.slice(-6) : '',
     bitrix_url: cfg.bitrix_url || '',
-    admin_user: cfg.admin_user
+    admin_user: cfg.admin_user,
+    sales_users: (cfg.sales_users || []).map(u => ({ id: u.id, name: u.name, bitrix_id: u.bitrix_id }))
   });
 });
 
@@ -70,8 +73,31 @@ app.post('/admin/login', (req, res) => {
   }
 });
 
-// Bitrix24 kullanıcı listesi
-app.get('/api/users', async (req, res) => {
+// Satışçı ekle/güncelle
+app.post('/admin/sales-user', adminAuth, (req, res) => {
+  const { id, name, username, password, bitrix_id } = req.body;
+  if (!name || !username || !password) return res.status(400).json({ error: 'Ad, kullanıcı adı ve şifre zorunlu' });
+  const cfg = getConfig();
+  if (!cfg.sales_users) cfg.sales_users = [];
+  const userId = id || Date.now().toString();
+  const idx = cfg.sales_users.findIndex(u => u.id === userId);
+  const user = { id: userId, name, username, password, bitrix_id: bitrix_id || '' };
+  if (idx >= 0) cfg.sales_users[idx] = user;
+  else cfg.sales_users.push(user);
+  saveConfig(cfg);
+  res.json({ success: true, id: userId });
+});
+
+// Satışçı sil
+app.delete('/admin/sales-user/:id', adminAuth, (req, res) => {
+  const cfg = getConfig();
+  cfg.sales_users = (cfg.sales_users || []).filter(u => u.id !== req.params.id);
+  saveConfig(cfg);
+  res.json({ success: true });
+});
+
+// Bitrix24 kullanıcı listesi (admin için)
+app.get('/admin/bitrix-users', adminAuth, async (req, res) => {
   try {
     const cfg = getConfig();
     const BITRIX = cfg.bitrix_url.replace(/\/$/, '');
@@ -91,8 +117,30 @@ app.get('/api/users', async (req, res) => {
   }
 });
 
+// Kullanıcı girişi
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body;
+  const cfg = getConfig();
+  const user = (cfg.sales_users || []).find(u => u.username === username && u.password === password);
+  if (!user) return res.status(401).json({ error: 'Kullanıcı adı veya şifre hatalı' });
+  const token = Buffer.from(`${user.id}:${user.password}`).toString('base64');
+  res.json({ success: true, token, name: user.name, bitrix_id: user.bitrix_id });
+});
+
+// Token doğrula
+function getUserByToken(token) {
+  try {
+    const [userId, password] = Buffer.from(token, 'base64').toString().split(':');
+    const cfg = getConfig();
+    return (cfg.sales_users || []).find(u => u.id === userId && u.password === password) || null;
+  } catch(e) { return null; }
+}
+
 // OCR
 app.post('/api/scan', upload.single('image'), async (req, res) => {
+  const token = req.headers['x-auth-token'];
+  if (!token || !getUserByToken(token)) return res.status(401).json({ error: 'Giriş yapmanız gerekiyor' });
+
   try {
     const cfg = getConfig();
     const visionKey = cfg.google_vision_key || process.env.GOOGLE_VISION_KEY;
@@ -118,41 +166,32 @@ app.post('/api/scan', upload.single('image'), async (req, res) => {
     const addressKeywords = /sokak|cadde|bulvar|mah\.|no:|ankara|istanbul|izmir|bursa|cad\.|sok\./i;
     const addressLines = lines.filter(l => addressKeywords.test(l));
     const usedLines = new Set();
-
-    const nameLine = lines.find(l =>
-      /^[A-ZÇĞİÖŞÜ][a-zA-ZçğışöüÇĞİÖŞÜ\s]+$/.test(l) &&
-      l.split(' ').length >= 2 && l.length > 4 && !addressKeywords.test(l)
-    );
+    const nameLine = lines.find(l => /^[A-ZÇĞİÖŞÜ][a-zA-ZçğışöüÇĞİÖŞÜ\s]+$/.test(l) && l.split(' ').length >= 2 && l.length > 4 && !addressKeywords.test(l));
     if (nameLine) usedLines.add(nameLine);
-    const titleLine = lines.find(l => !usedLines.has(l) && l.length > 3 &&
-      !emailMatch?.[0]?.includes(l) && !/^\+?[\d\s\-()]+$/.test(l) && !addressKeywords.test(l));
+    const titleLine = lines.find(l => !usedLines.has(l) && l.length > 3 && !emailMatch?.[0]?.includes(l) && !/^\+?[\d\s\-()]+$/.test(l) && !addressKeywords.test(l));
     if (titleLine) usedLines.add(titleLine);
-    const companyLine = lines.find(l => !usedLines.has(l) && l.length > 2 &&
-      !emailMatch?.[0]?.includes(l) && !addressKeywords.test(l) && !/^\+?[\d\s\-()]+$/.test(l));
+    const companyLine = lines.find(l => !usedLines.has(l) && l.length > 2 && !emailMatch?.[0]?.includes(l) && !addressKeywords.test(l) && !/^\+?[\d\s\-()]+$/.test(l));
 
-    res.json({
-      name: nameLine || lines[0] || '',
-      title: titleLine || '',
-      company: companyLine || '',
-      phone: phoneMatch?.[0]?.trim() || '',
-      email: emailMatch?.[0] || '',
-      website: websiteMatch?.[0] || '',
-      address: addressLines.join(', ') || ''
-    });
+    res.json({ name: nameLine || lines[0] || '', title: titleLine || '', company: companyLine || '', phone: phoneMatch?.[0]?.trim() || '', email: emailMatch?.[0] || '', website: websiteMatch?.[0] || '', address: addressLines.join(', ') || '' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Deal + Contact + Company
+// Deal
 app.post('/api/deal', async (req, res) => {
+  const token = req.headers['x-auth-token'];
+  const user = token ? getUserByToken(token) : null;
+  if (!user) return res.status(401).json({ error: 'Giriş yapmanız gerekiyor' });
+
   try {
     const cfg = getConfig();
-    const { name, title, company, phone, email, website, address, dealTitle, customerType, source, assignedBy, note } = req.body;
+    const { name, title, company, phone, email, website, address, dealTitle, customerType, source, note } = req.body;
     const BITRIX = cfg.bitrix_url.replace(/\/$/, '');
-    if (!BITRIX) return res.status(400).json({ error: 'Bitrix24 Webhook URL admin panelinde tanımlı değil.' });
+    if (!BITRIX) return res.status(400).json({ error: 'Bitrix24 Webhook URL tanımlı değil.' });
     const domain = BITRIX.split('/rest/')[0];
     const [dealTypeId, contactTypeId] = (customerType || '').split('|');
+    const assignedBy = user.bitrix_id || '';
 
     async function bx(method, fields) {
       const r = await fetch(`${BITRIX}/${method}.json`, {
@@ -163,12 +202,10 @@ app.post('/api/deal', async (req, res) => {
       return r.json();
     }
 
-    // 1. Company
     let companyId = null;
     if (company) {
       const compRes = await bx('crm.company.add', {
-        TITLE: company,
-        COMPANY_TYPE: 'CUSTOMER',
+        TITLE: company, COMPANY_TYPE: 'CUSTOMER',
         ...(website && { WEB: [{ VALUE: website, VALUE_TYPE: 'WORK' }] }),
         ...(address && { ADDRESS: address }),
         ...(source && { SOURCE_ID: source }),
@@ -177,12 +214,10 @@ app.post('/api/deal', async (req, res) => {
       if (compRes.result) companyId = compRes.result;
     }
 
-    // 2. Contact
     let contactId = null;
     const nameParts = (name || '').trim().split(' ');
     const contRes = await bx('crm.contact.add', {
-      NAME: nameParts[0] || '',
-      LAST_NAME: nameParts.slice(1).join(' ') || '',
+      NAME: nameParts[0] || '', LAST_NAME: nameParts.slice(1).join(' ') || '',
       POST: title || '',
       ...(contactTypeId && { UF_CRM_6836B469670FA: contactTypeId }),
       ...(phone && { PHONE: [{ VALUE: phone, VALUE_TYPE: 'WORK' }] }),
@@ -195,7 +230,6 @@ app.post('/api/deal', async (req, res) => {
     });
     if (contRes.result) contactId = contRes.result;
 
-    // 3. Deal
     const dealRes = await bx('crm.deal.add', {
       TITLE: dealTitle || [name, company].filter(Boolean).join(' - ') || 'Yeni Deal',
       STAGE_ID: 'C1:NEW',
@@ -208,11 +242,7 @@ app.post('/api/deal', async (req, res) => {
     });
 
     if (dealRes.result && note) {
-      await bx('crm.timeline.comment.add', {
-        ENTITY_TYPE: 'deal',
-        ENTITY_ID: dealRes.result,
-        COMMENT: note
-      });
+      await bx('crm.timeline.comment.add', { ENTITY_TYPE: 'deal', ENTITY_ID: dealRes.result, COMMENT: note });
     }
 
     if (dealRes.result) {
@@ -226,3 +256,22 @@ app.post('/api/deal', async (req, res) => {
 });
 
 app.listen(process.env.PORT || 3000, () => console.log('Çalışıyor!'));
+
+// Şifre değiştir
+app.post('/api/change-password', (req, res) => {
+  const token = req.headers['x-auth-token'];
+  const user = token ? getUserByToken(token) : null;
+  if (!user) return res.status(401).json({ error: 'Giriş yapmanız gerekiyor' });
+
+  const { oldPassword, newPassword } = req.body;
+  if (user.password !== oldPassword) return res.status(401).json({ error: 'Mevcut şifre hatalı' });
+  if (!newPassword || newPassword.length < 4) return res.status(400).json({ error: 'Yeni şifre en az 4 karakter olmalı' });
+
+  const cfg = getConfig();
+  const idx = cfg.sales_users.findIndex(u => u.id === user.id);
+  cfg.sales_users[idx].password = newPassword;
+  saveConfig(cfg);
+
+  const newToken = Buffer.from(`${user.id}:${newPassword}`).toString('base64');
+  res.json({ success: true, token: newToken });
+});
