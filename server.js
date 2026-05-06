@@ -1,6 +1,7 @@
 const express = require('express');
 const multer = require('multer');
 const fetch = require('node-fetch');
+const sharp = require('sharp');
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -14,8 +15,9 @@ const DEFAULT_BITRIX = process.env.BITRIX_WEBHOOK_URL || '';
 // Kart OCR
 app.post('/api/scan', upload.single('image'), async (req, res) => {
   try {
-    const base64 = req.file.buffer.toString('base64');
-    const mime = req.file.mimetype || 'image/jpeg';
+    // HEIC/HEIF dahil tüm formatları JPEG'e çevir
+    const jpegBuffer = await sharp(req.file.buffer).jpeg({ quality: 90 }).toBuffer();
+    const base64 = jpegBuffer.toString('base64');
 
     const r = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -29,7 +31,7 @@ app.post('/api/scan', upload.single('image'), async (req, res) => {
         messages: [{
           role: 'user',
           content: [
-            { type: 'image_url', image_url: { url: `data:${mime};base64,${base64}` } },
+            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } },
             { type: 'text', text: 'Bu vizit kartındaki bilgileri JSON olarak çıkar. SADECE JSON döndür, başka hiçbir şey yazma. Format: {"name":"","title":"","company":"","phone":"","email":"","website":""}' }
           ]
         }]
