@@ -15,7 +15,6 @@ function getConfig() {
     if (fs.existsSync(CONFIG_FILE)) return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
   } catch(e) {}
   return {
-    openai_key: process.env.OPENAI_API_KEY || '',
     google_vision_key: process.env.GOOGLE_VISION_KEY || '',
     bitrix_url: process.env.BITRIX_WEBHOOK_URL || '',
     admin_user: process.env.ADMIN_USER || 'admin',
@@ -36,16 +35,15 @@ function adminAuth(req, res, next) {
 app.get('/admin/config', adminAuth, (req, res) => {
   const cfg = getConfig();
   res.json({
-    openai_key: cfg.openai_key ? '***' + cfg.openai_key.slice(-6) : '',
     google_vision_key: cfg.google_vision_key ? '***' + cfg.google_vision_key.slice(-6) : '',
     bitrix_url: cfg.bitrix_url || '',
     admin_user: cfg.admin_user
   });
 });
+
 app.post('/admin/config', adminAuth, (req, res) => {
   const cfg = getConfig();
-  const { openai_key, google_vision_key, bitrix_url, admin_user, new_pass } = req.body;
-  if (openai_key && !openai_key.startsWith('***')) cfg.openai_key = openai_key;
+  const { google_vision_key, bitrix_url, admin_user, new_pass } = req.body;
   if (google_vision_key && !google_vision_key.startsWith('***')) cfg.google_vision_key = google_vision_key;
   if (bitrix_url !== undefined) cfg.bitrix_url = bitrix_url;
   if (admin_user) cfg.admin_user = admin_user;
@@ -53,14 +51,15 @@ app.post('/admin/config', adminAuth, (req, res) => {
   saveConfig(cfg);
   res.json({ success: true });
 });
+
 app.delete('/admin/config/:key', adminAuth, (req, res) => {
   const cfg = getConfig();
-  if (req.params.key === 'openai_key') cfg.openai_key = '';
   if (req.params.key === 'google_vision_key') cfg.google_vision_key = '';
   if (req.params.key === 'bitrix_url') cfg.bitrix_url = '';
   saveConfig(cfg);
   res.json({ success: true });
 });
+
 app.post('/admin/login', (req, res) => {
   const { user, pass } = req.body;
   const cfg = getConfig();
@@ -71,116 +70,67 @@ app.post('/admin/login', (req, res) => {
   }
 });
 
-// Google Vision ile OCR yapıp Claude ile parse et
-async function ocrWithGoogleVision(base64, visionKey) {
-  const r = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${visionKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      requests: [{
-        image: { content: base64 },
-        features: [{ type: 'TEXT_DETECTION', maxResults: 1 }]
-      }]
-    })
-  });
-  const data = await r.json();
-  if (data.error) throw new Error(data.error.message);
-  const text = data.responses?.[0]?.fullTextAnnotation?.text || '';
-  if (!text) throw new Error('Kartta metin bulunamadı');
-
-  // OpenAI ile parse et (varsa) yoksa regex ile
-  return text;
-}
-
-// Metinden kart bilgilerini çıkar
-function parseCardText(text) {
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-
-  const emailMatch = text.match(/[\w.-]+@[\w.-]+\.\w+/);
-  const phoneMatch = text.match(/(\+?[\d\s\-().]{7,20})/);
-  const websiteMatch = text.match(/(www\.[^\s]+|https?:\/\/[^\s]+|[a-z0-9-]+\.(com|net|org|tr|io|app|group|grup)[^\s]*)/i);
-
-  // İsim genellikle ilk satırda büyük harfle
-  const nameLine = lines.find(l => /^[A-ZÇĞİÖŞÜa-zçğışöü\s]{3,}$/.test(l) && l.split(' ').length >= 2 && !l.match(/\d/));
-
-  return {
-    name: nameLine || lines[0] || '',
-    title: lines[1] || '',
-    company: lines.find(l => l !== nameLine && l !== lines[1] && !emailMatch?.[0]?.includes(l) && l.length > 3) || '',
-    phone: phoneMatch?.[0]?.trim() || '',
-    email: emailMatch?.[0] || '',
-    website: websiteMatch?.[0] || '',
-    address: lines.filter(l => /sokak|cadde|bulvar|mah\.|apt\.|no:|kat|ankara|istanbul|izmir|\d{5}/i.test(l)).join(', ') || ''
-  };
-}
-
-// OCR endpoint
+// OCR - Google Vision
 app.post('/api/scan', upload.single('image'), async (req, res) => {
   try {
     const cfg = getConfig();
     const visionKey = cfg.google_vision_key || process.env.GOOGLE_VISION_KEY;
-    const openaiKey = cfg.openai_key || process.env.OPENAI_API_KEY;
-
-    if (!visionKey && !openaiKey) {
-      return res.status(400).json({ error: 'API key tanımlı değil. Admin panelinden Google Vision veya OpenAI key ekleyin.' });
-    }
+    if (!visionKey) return res.status(400).json({ error: 'Google Vision API key tanımlı değil. Admin panelinden ekleyin.' });
 
     const base64 = req.file.buffer.toString('base64');
 
-    // Google Vision varsa önce onu kullan
-    if (visionKey) {
-      try {
-        const rawText = await ocrWithGoogleVision(base64, visionKey);
-
-        // OpenAI de varsa metni parse etmesi için gönder
-        if (openaiKey) {
-          const r = await fetch('https://api.openai.com/v1/chat/completions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openaiKey}` },
-            body: JSON.stringify({
-              model: 'gpt-4o',
-              max_tokens: 400,
-              messages: [{
-                role: 'user',
-                content: `Aşağıdaki vizit kartı metninden bilgileri JSON olarak çıkar. SADECE JSON döndür:\n\n${rawText}\n\nFormat: {"name":"","title":"","company":"","phone":"","email":"","website":"","address":""}`
-              }]
-            })
-          });
-          const data = await r.json();
-          if (!data.error) {
-            const raw = data.choices[0].message.content.replace(/```json|```/g, '').trim();
-            return res.json(JSON.parse(raw));
-          }
-        }
-
-        // OpenAI yoksa basit parse
-        return res.json(parseCardText(rawText));
-      } catch(e) {
-        // Vision hata verdiyse OpenAI'ye geç
-        if (!openaiKey) return res.status(500).json({ error: e.message });
-      }
-    }
-
-    // OpenAI Vision ile direkt görsel gönder
-    const r = await fetch('https://api.openai.com/v1/chat/completions', {
+    const r = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${visionKey}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openaiKey}` },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'gpt-4o',
-        max_tokens: 500,
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } },
-            { type: 'text', text: 'Bu vizit kartındaki tüm bilgileri JSON olarak çıkar. SADECE JSON döndür. Format: {"name":"","title":"","company":"","phone":"","email":"","website":"","address":""}' }
-          ]
+        requests: [{
+          image: { content: base64 },
+          features: [{ type: 'TEXT_DETECTION', maxResults: 1 }]
         }]
       })
     });
+
     const data = await r.json();
     if (data.error) return res.status(500).json({ error: data.error.message });
-    const raw = data.choices[0].message.content.replace(/```json|```/g, '').trim();
-    res.json(JSON.parse(raw));
+
+    const text = data.responses?.[0]?.fullTextAnnotation?.text || '';
+    if (!text) return res.status(400).json({ error: 'Kartta metin bulunamadı' });
+
+    // Metinden bilgileri çıkar
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    const emailMatch = text.match(/[\w.+-]+@[\w.-]+\.\w+/);
+    const phoneMatch = text.match(/(\+?[\d\s\-().]{7,20})/);
+    const websiteMatch = text.match(/(www\.[^\s]+|[a-z0-9-]+\.(com\.tr|com|net|org|tr|io|app|grup|group)[^\s/]*)/i);
+    const addressKeywords = /sokak|cadde|bulvar|mah\.|apt\.|no:|kat\s|ankara|istanbul|izmir|bursa|cad\.|sok\.|blok/i;
+
+    const addressLines = lines.filter(l => addressKeywords.test(l));
+    const usedLines = new Set();
+
+    // İsim: büyük harfli, en az 2 kelime, rakam yok
+    const nameLine = lines.find(l =>
+      /^[A-ZÇĞİÖŞÜ][a-zA-ZçğışöüÇĞİÖŞÜ\s]+$/.test(l) &&
+      l.split(' ').length >= 2 &&
+      l.length > 4
+    );
+    if (nameLine) usedLines.add(nameLine);
+
+    // Ünvan: ikinci anlamlı satır
+    const titleLine = lines.find(l => l !== nameLine && !emailMatch?.[0]?.includes(l) && !phoneMatch?.[0]?.includes(l) && l.length > 3 && !usedLines.has(l) && !/^www|http/i.test(l));
+    if (titleLine) usedLines.add(titleLine);
+
+    // Firma: başka bir satır
+    const companyLine = lines.find(l => !usedLines.has(l) && l.length > 2 && !emailMatch?.[0]?.includes(l) && !addressKeywords.test(l) && !/^\+?[\d\s\-()]+$/.test(l));
+
+    res.json({
+      name: nameLine || lines[0] || '',
+      title: titleLine || '',
+      company: companyLine || '',
+      phone: phoneMatch?.[0]?.trim() || '',
+      email: emailMatch?.[0] || '',
+      website: websiteMatch?.[0] || '',
+      address: addressLines.join(', ') || ''
+    });
+
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -201,7 +151,9 @@ app.post('/api/deal', async (req, res) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fields })
       });
-      return r.json();
+      const d = await r.json();
+      console.log(method, JSON.stringify(d));
+      return d;
     }
 
     // 1. Company
@@ -217,7 +169,7 @@ app.post('/api/deal', async (req, res) => {
       if (compRes.result) companyId = compRes.result;
     }
 
-    // 2. Contact
+    // 2. Contact - TYPE_ID müşteri türü
     let contactId = null;
     const nameParts = (name || '').trim().split(' ');
     const firstName = nameParts[0] || '';
@@ -227,7 +179,7 @@ app.post('/api/deal', async (req, res) => {
       NAME: firstName,
       LAST_NAME: lastName,
       POST: title || '',
-      TYPE_ID: customerType || '',
+      ...(customerType && { UF_CRM_6836B469670FA: customerType }),
       ...(phone && { PHONE: [{ VALUE: phone, VALUE_TYPE: 'WORK' }] }),
       ...(email && { EMAIL: [{ VALUE: email, VALUE_TYPE: 'WORK' }] }),
       ...(website && { WEB: [{ VALUE: website, VALUE_TYPE: 'WORK' }] }),
