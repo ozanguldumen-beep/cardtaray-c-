@@ -44,8 +44,7 @@ h1 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
 .fg input {
   width: 100%; padding: 9px 12px;
   background: #111; border: 1px solid #2a2a2a;
-  border-radius: 8px; color: #f0f0f0; font-size: 13px;
-  font-family: monospace;
+  border-radius: 8px; color: #f0f0f0; font-size: 13px; font-family: monospace;
 }
 .fg input:focus { outline: none; border-color: #3a3a3a; }
 .fg input::placeholder { color: #333; }
@@ -63,8 +62,7 @@ h1 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
 .rf input {
   width: 100%; padding: 10px 12px;
   background: #1a1a1a; border: 1px solid #2a2a2a;
-  border-radius: 8px; color: #f0f0f0; font-size: 14px;
-  font-family: inherit;
+  border-radius: 8px; color: #f0f0f0; font-size: 14px; font-family: inherit;
 }
 .rf input:focus { outline: none; border-color: #3a3a3a; }
 
@@ -79,7 +77,6 @@ button.primary { background: #e8ff47; color: #0f0f0f; border-color: #e8ff47; fon
 button.primary:hover { background: #d4eb30; }
 button.danger { color: #f87171; border-color: #2a1a1a; }
 button.danger:hover { background: #1a0f0f; }
-
 .error { background: #1a0f0f; border: 1px solid #3a1a1a; border-radius: 8px; padding: 10px 14px; font-size: 13px; color: #f87171; margin-top: 12px; }
 
 .success-box { background: #0f1a0f; border: 1px solid #1a3a1a; border-radius: 14px; padding: 32px; text-align: center; }
@@ -88,6 +85,9 @@ button.danger:hover { background: #1a0f0f; }
 .success-box p { font-size: 14px; color: #666; margin-bottom: 16px; }
 .deal-link { display: inline-block; padding: 10px 20px; background: #1a2a1a; border: 1px solid #2a4a2a; border-radius: 8px; color: #4ade80; font-size: 13px; text-decoration: none; }
 .deal-link:hover { background: #1f301f; }
+.admin-link { display: block; text-align: center; margin-top: 24px; font-size: 12px; color: #333; text-decoration: none; }
+.admin-link:hover { color: #555; }
+canvas { display: none; }
 </style>
 </head>
 <body>
@@ -101,7 +101,6 @@ button.danger:hover { background: #1a0f0f; }
     <div class="pr" id="pr3"></div>
   </div>
 
-  <!-- Adım 1: Yükle -->
   <div class="step active" id="step1">
     <div class="upload-btn" onclick="document.getElementById('fileInput').click()">
       <svg fill="none" viewBox="0 0 24 24" stroke-width="1.5" xmlns="http://www.w3.org/2000/svg">
@@ -109,29 +108,28 @@ button.danger:hover { background: #1a0f0f; }
         <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0zM18.75 10.5h.008v.008h-.008V10.5z" />
       </svg>
       <span>Kart fotoğrafı çek veya seç</span>
-      <small>JPG, PNG desteklenir</small>
+      <small>JPG, PNG, HEIC desteklenir</small>
     </div>
     <input type="file" id="fileInput" accept="image/*" capture="environment">
 
     <div class="settings">
-      <h3>⚙ Ayarlar</h3>
+      <h3>⚙ Bitrix24 Webhook (isteğe bağlı)</h3>
       <div class="fg">
-        <label>Bitrix24 Webhook URL</label>
+        <label>Admin'de tanımlı değilse buraya girin</label>
         <input type="text" id="s-bitrix" placeholder="https://sirket.bitrix24.com.tr/rest/1/xxxxx/">
       </div>
     </div>
+    <a href="/admin.html" class="admin-link">⚙ Admin Paneli</a>
   </div>
 
-  <!-- Adım 2: Taranıyor -->
   <div class="step" id="step2">
     <img id="scanImg" alt="Kart">
     <div class="spinner-box">
       <div class="spinner"></div>
-      <p id="scanMsg">GPT-4o ile kart okunuyor...</p>
+      <p id="scanMsg">Kart okunuyor...</p>
     </div>
   </div>
 
-  <!-- Adım 3: Düzenle & Gönder -->
   <div class="step" id="step3">
     <img id="reviewImg" alt="Kart">
     <p class="lbl">Bilgileri kontrol et ve düzenle</p>
@@ -151,7 +149,6 @@ button.danger:hover { background: #1a0f0f; }
     </div>
   </div>
 
-  <!-- Adım 4: Başarılı -->
   <div class="step" id="step4">
     <div class="success-box">
       <div class="check">✅</div>
@@ -165,9 +162,9 @@ button.danger:hover { background: #1a0f0f; }
   </div>
 </div>
 
-<script>
-let imgFile = null;
+<canvas id="cvs"></canvas>
 
+<script>
 function setStep(n) {
   [1,2,3,4].forEach(i => document.getElementById('step'+i).classList.remove('active'));
   document.getElementById('step'+n).classList.add('active');
@@ -177,46 +174,68 @@ function setStep(n) {
   });
 }
 
+// Görseli canvas üzerinden JPEG'e çevir (HEIC dahil tüm formatlar)
+function toJpegBlob(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const cvs = document.getElementById('cvs');
+      // Çok büyük resimleri küçült (max 1600px)
+      const MAX = 1600;
+      let w = img.width, h = img.height;
+      if (w > MAX || h > MAX) {
+        if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+        else { w = Math.round(w * MAX / h); h = MAX; }
+      }
+      cvs.width = w; cvs.height = h;
+      cvs.getContext('2d').drawImage(img, 0, 0, w, h);
+      cvs.toBlob(blob => { URL.revokeObjectURL(url); resolve(blob); }, 'image/jpeg', 0.88);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Görsel yüklenemedi')); };
+    img.src = url;
+  });
+}
+
 document.getElementById('fileInput').addEventListener('change', async function(e) {
   const file = e.target.files[0];
   if (!file) return;
-  imgFile = file;
 
-  const reader = new FileReader();
-  reader.onload = async (ev) => {
-    document.getElementById('scanImg').src = ev.target.result;
-    document.getElementById('reviewImg').src = ev.target.result;
-    setStep(2);
+  const previewUrl = URL.createObjectURL(file);
+  document.getElementById('scanImg').src = previewUrl;
+  document.getElementById('reviewImg').src = previewUrl;
+  setStep(2);
+  document.getElementById('scanMsg').textContent = 'Görsel hazırlanıyor...';
 
-    try {
-      const formData = new FormData();
-      formData.append('image', file);
+  try {
+    // HEIC ve diğer formatları JPEG'e çevir
+    const jpegBlob = await toJpegBlob(file);
+    document.getElementById('scanMsg').textContent = 'GPT-4o ile kart okunuyor...';
 
-      const res = await fetch('/api/scan', { method: 'POST', body: formData });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
+    const formData = new FormData();
+    formData.append('image', jpegBlob, 'card.jpg');
 
-      document.getElementById('f-name').value = data.name || '';
-      document.getElementById('f-title').value = data.title || '';
-      document.getElementById('f-company').value = data.company || '';
-      document.getElementById('f-phone').value = data.phone || '';
-      document.getElementById('f-email').value = data.email || '';
-      document.getElementById('f-web').value = data.website || '';
-      document.getElementById('f-deal').value = [data.name, data.company].filter(Boolean).join(' - ') || 'Yeni Deal';
+    const res = await fetch('/api/scan', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
 
-      setStep(3);
-    } catch(err) {
-      alert('OCR hatası: ' + err.message);
-      setStep(1);
-    }
-  };
-  reader.readAsDataURL(file);
+    document.getElementById('f-name').value = data.name || '';
+    document.getElementById('f-title').value = data.title || '';
+    document.getElementById('f-company').value = data.company || '';
+    document.getElementById('f-phone').value = data.phone || '';
+    document.getElementById('f-email').value = data.email || '';
+    document.getElementById('f-web').value = data.website || '';
+    document.getElementById('f-deal').value = [data.name, data.company].filter(Boolean).join(' - ') || 'Yeni Deal';
+
+    setStep(3);
+  } catch(err) {
+    alert('Hata: ' + err.message);
+    setStep(1);
+  }
 });
 
 async function sendDeal() {
   document.getElementById('errBox').innerHTML = '';
-  const bitrixUrl = document.getElementById('s-bitrix').value.trim();
-
   const body = {
     name: document.getElementById('f-name').value,
     title: document.getElementById('f-title').value,
@@ -225,7 +244,7 @@ async function sendDeal() {
     email: document.getElementById('f-email').value,
     website: document.getElementById('f-web').value,
     dealTitle: document.getElementById('f-deal').value,
-    bitrixUrl
+    bitrixUrl: document.getElementById('s-bitrix').value.trim()
   };
 
   try {
@@ -250,7 +269,6 @@ async function sendDeal() {
 function reset() {
   document.getElementById('fileInput').value = '';
   document.getElementById('errBox').innerHTML = '';
-  imgFile = null;
   setStep(1);
 }
 </script>
