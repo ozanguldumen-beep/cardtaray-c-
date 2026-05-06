@@ -140,7 +140,7 @@ app.post('/api/scan', upload.single('image'), async (req, res) => {
 app.post('/api/deal', async (req, res) => {
   try {
     const cfg = getConfig();
-    const { name, title, company, phone, email, website, address, dealTitle, customerType, source } = req.body;
+    const { name, title, company, phone, email, website, address, dealTitle, customerType, source, assignedBy, note } = req.body;
     const [dealTypeId, contactTypeId] = (customerType || "").split("|");
     const BITRIX = cfg.bitrix_url.replace(/\/$/, '');
     if (!BITRIX) return res.status(400).json({ error: 'Bitrix24 Webhook URL admin panelinde tanımlı değil.' });
@@ -197,9 +197,19 @@ app.post('/api/deal', async (req, res) => {
       COMMENTS: [title, address, website].filter(Boolean).join(' | '),
       ...(source && { SOURCE_ID: source }),
       ...(dealTypeId && { UF_CRM_682498877DEB3: dealTypeId }),
+      ...(assignedBy && { ASSIGNED_BY_ID: assignedBy }),
       ...(contactId && { CONTACT_ID: contactId }),
       ...(companyId && { COMPANY_ID: companyId })
     });
+
+    // Not varsa timeline'a ekle
+    if (dealRes.result && note) {
+      await bx('crm.timeline.comment.add', {
+        ENTITY_TYPE: 'deal',
+        ENTITY_ID: dealRes.result,
+        COMMENT: note
+      });
+    }
 
     if (dealRes.result) {
       res.json({ success: true, dealId: dealRes.result, url: `${domain}/crm/deal/details/${dealRes.result}/` });
@@ -212,3 +222,19 @@ app.post('/api/deal', async (req, res) => {
 });
 
 app.listen(process.env.PORT || 3000, () => console.log('Çalışıyor!'));
+
+// Kullanıcı listesi
+app.get('/api/users', async (req, res) => {
+  try {
+    const cfg = getConfig();
+    const BITRIX = cfg.bitrix_url.replace(/\/$/, '');
+    if (!BITRIX) return res.json({ users: [] });
+    const r = await fetch(`${BITRIX}/user.get.json?FILTER[ACTIVE]=true&select[]=ID&select[]=NAME&select[]=LAST_NAME&select[]=PERSONAL_PHOTO`, {
+      method: 'GET'
+    });
+    const data = await r.json();
+    res.json({ users: data.result || [] });
+  } catch(e) {
+    res.json({ users: [] });
+  }
+});

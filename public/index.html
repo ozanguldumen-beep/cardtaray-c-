@@ -100,11 +100,18 @@ canvas { display: none; }
       <div class="rf"><label>E-posta</label><input type="email" id="f-email"></div>
       <div class="rf"><label>Website</label><input type="text" id="f-web"></div>
       <div class="rf full"><label>Adres</label><input type="text" id="f-address"></div>
+      <div class="rf full"><label>Not / Yorum <span style="color:#444;font-weight:400">(Bitrix24 timeline'a eklenir)</span></label><textarea id="f-note" rows="3" style="width:100%;padding:10px 12px;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;color:#f0f0f0;font-size:14px;font-family:inherit;resize:vertical;" placeholder="Bu kişi hakkında not ekle..."></textarea></div>
     </div>
 
     <p class="section-sep">Bitrix24 Ayarları</p>
     <div class="grid">
       <div class="rf full"><label>Deal Başlığı</label><input type="text" id="f-deal"></div>
+      <div class="rf">
+        <label>Sorumlu Kişi</label>
+        <select id="f-assigned">
+          <option value="">Yükleniyor...</option>
+        </select>
+      </div>
       <div class="rf">
         <label>Müşteri Türü</label>
         <select id="f-ctype">
@@ -164,6 +171,27 @@ canvas { display: none; }
 <canvas id="cvs"></canvas>
 
 <script>
+
+// Kullanıcı listesini yükle
+async function loadUsers() {
+  try {
+    const res = await fetch('/api/users');
+    const data = await res.json();
+    const sel = document.getElementById('f-assigned');
+    sel.innerHTML = '<option value="">Seçilmedi</option>';
+    if (data.users && data.users.length > 0) {
+      data.users.forEach(u => {
+        const opt = document.createElement('option');
+        opt.value = u.ID;
+        opt.textContent = [u.NAME, u.LAST_NAME].filter(Boolean).join(' ');
+        sel.appendChild(opt);
+      });
+    }
+  } catch(e) {
+    document.getElementById('f-assigned').innerHTML = '<option value="">Seçilmedi</option>';
+  }
+}
+loadUsers();
 
 function setStep(n) {
   [1,2,3,4].forEach(i => document.getElementById('step'+i).classList.remove('active'));
@@ -238,7 +266,9 @@ async function sendDeal() {
     address: document.getElementById('f-address').value,
     dealTitle: document.getElementById('f-deal').value,
     customerType: document.getElementById('f-ctype').value,
-    source: document.getElementById('f-source').value
+    source: document.getElementById('f-source').value,
+    assignedBy: document.getElementById('f-assigned').value,
+    note: document.getElementById('f-note').value
   };
   try {
     const res = await fetch('/api/deal', {
