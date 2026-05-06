@@ -63,26 +63,6 @@ app.post('/admin/login', (req, res) => {
   }
 });
 
-// Kaynak listesini Bitrix24'ten çek
-app.get('/api/sources', async (req, res) => {
-  try {
-    const cfg = getConfig();
-    const BITRIX = cfg.bitrix_url.replace(/\/$/, '');
-    if (!BITRIX) return res.json({ sources: [] });
-    const r = await fetch(`${BITRIX}/crm.status.list.json?FILTER[ENTITY_ID]=SOURCE`, {
-      method: 'GET'
-    });
-    const data = await r.json();
-    if (data.result) {
-      res.json({ sources: data.result });
-    } else {
-      res.json({ sources: [] });
-    }
-  } catch(e) {
-    res.json({ sources: [] });
-  }
-});
-
 // OCR
 app.post('/api/scan', upload.single('image'), async (req, res) => {
   try {
@@ -135,51 +115,46 @@ app.post('/api/deal', async (req, res) => {
     // 1. Company
     let companyId = null;
     if (company) {
-      const compFields = {
+      const compRes = await bx('crm.company.add', {
         TITLE: company,
         COMPANY_TYPE: 'CUSTOMER',
         ...(website && { WEB: [{ VALUE: website, VALUE_TYPE: 'WORK' }] }),
-        ...(customerType && { UfCrm68344cf6d8fa1: customerType }),
         ...(address && { ADDRESS: address }),
         ...(source && { SOURCE_ID: source })
-      };
-      const compRes = await bx('crm.company.add', compFields);
+      });
       if (compRes.result) companyId = compRes.result;
     }
 
-    // 2. Contact
+    // 2. Contact - TYPE_ID müşteri türü için standart field
     let contactId = null;
     const nameParts = (name || '').trim().split(' ');
     const firstName = nameParts[0] || '';
     const lastName = nameParts.slice(1).join(' ') || '';
-    const contFields = {
+
+    const contRes = await bx('crm.contact.add', {
       NAME: firstName,
       LAST_NAME: lastName,
       POST: title || '',
+      TYPE_ID: customerType || '',
       ...(phone && { PHONE: [{ VALUE: phone, VALUE_TYPE: 'WORK' }] }),
       ...(email && { EMAIL: [{ VALUE: email, VALUE_TYPE: 'WORK' }] }),
       ...(website && { WEB: [{ VALUE: website, VALUE_TYPE: 'WORK' }] }),
-        ...(customerType && { UfCrm68344cf6d8fa1: customerType }),
       ...(address && { ADDRESS: address }),
       ...(source && { SOURCE_ID: source }),
-      ...(customerType && { UfCrm6836b469670fa: customerType }),
       ...(companyId && { COMPANY_ID: companyId })
-    };
-    const contRes = await bx('crm.contact.add', contFields);
+    });
     if (contRes.result) contactId = contRes.result;
 
-    // 3. Deal - Yeni Müşteri Adayı + custom müşteri türü alanı
-    const dealFields = {
+    // 3. Deal
+    const dealRes = await bx('crm.deal.add', {
       TITLE: dealTitle || [name, company].filter(Boolean).join(' - ') || 'Yeni Deal',
       STAGE_ID: 'C1:NEW',
       COMMENTS: [title, address, website].filter(Boolean).join(' | '),
       ...(source && { SOURCE_ID: source }),
       ...(customerType && { UfCrm682498877deb3: customerType }),
       ...(contactId && { CONTACT_ID: contactId }),
-      ...(customerType && { UfCrm6836b469670fa: customerType }),
       ...(companyId && { COMPANY_ID: companyId })
-    };
-    const dealRes = await bx('crm.deal.add', dealFields);
+    });
 
     if (dealRes.result) {
       res.json({ success: true, dealId: dealRes.result, url: `${domain}/crm/deal/details/${dealRes.result}/` });
