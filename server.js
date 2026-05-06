@@ -70,56 +70,65 @@ app.post('/admin/login', (req, res) => {
   }
 });
 
-// OCR - Google Vision
+// Bitrix24 kullanıcı listesi
+app.get('/api/users', async (req, res) => {
+  try {
+    const cfg = getConfig();
+    const BITRIX = cfg.bitrix_url.replace(/\/$/, '');
+    if (!BITRIX) return res.json({ users: [] });
+    const r = await fetch(`${BITRIX}/user.get.json`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filter: { ACTIVE: true }, select: ['ID', 'NAME', 'LAST_NAME'] })
+    });
+    const data = await r.json();
+    res.json({ users: (data.result || []).map(u => ({
+      id: u.ID,
+      name: [u.NAME, u.LAST_NAME].filter(Boolean).join(' ')
+    }))});
+  } catch(e) {
+    res.json({ users: [] });
+  }
+});
+
+// OCR
 app.post('/api/scan', upload.single('image'), async (req, res) => {
   try {
     const cfg = getConfig();
     const visionKey = cfg.google_vision_key || process.env.GOOGLE_VISION_KEY;
-    if (!visionKey) return res.status(400).json({ error: 'Google Vision API key tanımlı değil. Admin panelinden ekleyin.' });
+    if (!visionKey) return res.status(400).json({ error: 'Google Vision API key tanımlı değil.' });
 
     const base64 = req.file.buffer.toString('base64');
-
     const r = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${visionKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        requests: [{
-          image: { content: base64 },
-          features: [{ type: 'TEXT_DETECTION', maxResults: 1 }]
-        }]
+        requests: [{ image: { content: base64 }, features: [{ type: 'TEXT_DETECTION', maxResults: 1 }] }]
       })
     });
-
     const data = await r.json();
     if (data.error) return res.status(500).json({ error: data.error.message });
-
     const text = data.responses?.[0]?.fullTextAnnotation?.text || '';
     if (!text) return res.status(400).json({ error: 'Kartta metin bulunamadı' });
 
-    // Metinden bilgileri çıkar
     const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
     const emailMatch = text.match(/[\w.+-]+@[\w.-]+\.\w+/);
     const phoneMatch = text.match(/(\+?[\d\s\-().]{7,20})/);
     const websiteMatch = text.match(/(www\.[^\s]+|[a-z0-9-]+\.(com\.tr|com|net|org|tr|io|app|grup|group)[^\s/]*)/i);
-    const addressKeywords = /sokak|cadde|bulvar|mah\.|apt\.|no:|kat\s|ankara|istanbul|izmir|bursa|cad\.|sok\.|blok/i;
-
+    const addressKeywords = /sokak|cadde|bulvar|mah\.|no:|ankara|istanbul|izmir|bursa|cad\.|sok\./i;
     const addressLines = lines.filter(l => addressKeywords.test(l));
     const usedLines = new Set();
 
-    // İsim: büyük harfli, en az 2 kelime, rakam yok
     const nameLine = lines.find(l =>
       /^[A-ZÇĞİÖŞÜ][a-zA-ZçğışöüÇĞİÖŞÜ\s]+$/.test(l) &&
-      l.split(' ').length >= 2 &&
-      l.length > 4
+      l.split(' ').length >= 2 && l.length > 4 && !addressKeywords.test(l)
     );
     if (nameLine) usedLines.add(nameLine);
-
-    // Ünvan: ikinci anlamlı satır
-    const titleLine = lines.find(l => l !== nameLine && !emailMatch?.[0]?.includes(l) && !phoneMatch?.[0]?.includes(l) && l.length > 3 && !usedLines.has(l) && !/^www|http/i.test(l));
+    const titleLine = lines.find(l => !usedLines.has(l) && l.length > 3 &&
+      !emailMatch?.[0]?.includes(l) && !/^\+?[\d\s\-()]+$/.test(l) && !addressKeywords.test(l));
     if (titleLine) usedLines.add(titleLine);
-
-    // Firma: başka bir satır
-    const companyLine = lines.find(l => !usedLines.has(l) && l.length > 2 && !emailMatch?.[0]?.includes(l) && !addressKeywords.test(l) && !/^\+?[\d\s\-()]+$/.test(l));
+    const companyLine = lines.find(l => !usedLines.has(l) && l.length > 2 &&
+      !emailMatch?.[0]?.includes(l) && !addressKeywords.test(l) && !/^\+?[\d\s\-()]+$/.test(l));
 
     res.json({
       name: nameLine || lines[0] || '',
@@ -130,7 +139,6 @@ app.post('/api/scan', upload.single('image'), async (req, res) => {
       website: websiteMatch?.[0] || '',
       address: addressLines.join(', ') || ''
     });
-
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -141,10 +149,10 @@ app.post('/api/deal', async (req, res) => {
   try {
     const cfg = getConfig();
     const { name, title, company, phone, email, website, address, dealTitle, customerType, source, assignedBy, note } = req.body;
-    const [dealTypeId, contactTypeId] = (customerType || "").split("|");
     const BITRIX = cfg.bitrix_url.replace(/\/$/, '');
     if (!BITRIX) return res.status(400).json({ error: 'Bitrix24 Webhook URL admin panelinde tanımlı değil.' });
     const domain = BITRIX.split('/rest/')[0];
+    const [dealTypeId, contactTypeId] = (customerType || '').split('|');
 
     async function bx(method, fields) {
       const r = await fetch(`${BITRIX}/${method}.json`, {
@@ -152,9 +160,7 @@ app.post('/api/deal', async (req, res) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fields })
       });
-      const d = await r.json();
-      console.log(method, JSON.stringify(d));
-      return d;
+      return r.json();
     }
 
     // 1. Company
@@ -165,20 +171,18 @@ app.post('/api/deal', async (req, res) => {
         COMPANY_TYPE: 'CUSTOMER',
         ...(website && { WEB: [{ VALUE: website, VALUE_TYPE: 'WORK' }] }),
         ...(address && { ADDRESS: address }),
-        ...(source && { SOURCE_ID: source })
+        ...(source && { SOURCE_ID: source }),
+        ...(assignedBy && { ASSIGNED_BY_ID: assignedBy })
       });
       if (compRes.result) companyId = compRes.result;
     }
 
-    // 2. Contact - TYPE_ID müşteri türü
+    // 2. Contact
     let contactId = null;
     const nameParts = (name || '').trim().split(' ');
-    const firstName = nameParts[0] || '';
-    const lastName = nameParts.slice(1).join(' ') || '';
-
     const contRes = await bx('crm.contact.add', {
-      NAME: firstName,
-      LAST_NAME: lastName,
+      NAME: nameParts[0] || '',
+      LAST_NAME: nameParts.slice(1).join(' ') || '',
       POST: title || '',
       ...(contactTypeId && { UF_CRM_6836B469670FA: contactTypeId }),
       ...(phone && { PHONE: [{ VALUE: phone, VALUE_TYPE: 'WORK' }] }),
@@ -186,6 +190,7 @@ app.post('/api/deal', async (req, res) => {
       ...(website && { WEB: [{ VALUE: website, VALUE_TYPE: 'WORK' }] }),
       ...(address && { ADDRESS: address }),
       ...(source && { SOURCE_ID: source }),
+      ...(assignedBy && { ASSIGNED_BY_ID: assignedBy }),
       ...(companyId && { COMPANY_ID: companyId })
     });
     if (contRes.result) contactId = contRes.result;
@@ -202,7 +207,6 @@ app.post('/api/deal', async (req, res) => {
       ...(companyId && { COMPANY_ID: companyId })
     });
 
-    // Not varsa timeline'a ekle
     if (dealRes.result && note) {
       await bx('crm.timeline.comment.add', {
         ENTITY_TYPE: 'deal',
@@ -222,19 +226,3 @@ app.post('/api/deal', async (req, res) => {
 });
 
 app.listen(process.env.PORT || 3000, () => console.log('Çalışıyor!'));
-
-// Kullanıcı listesi
-app.get('/api/users', async (req, res) => {
-  try {
-    const cfg = getConfig();
-    const BITRIX = cfg.bitrix_url.replace(/\/$/, '');
-    if (!BITRIX) return res.json({ users: [] });
-    const r = await fetch(`${BITRIX}/user.get.json?FILTER[ACTIVE]=true&select[]=ID&select[]=NAME&select[]=LAST_NAME&select[]=PERSONAL_PHOTO`, {
-      method: 'GET'
-    });
-    const data = await r.json();
-    res.json({ users: data.result || [] });
-  } catch(e) {
-    res.json({ users: [] });
-  }
-});
