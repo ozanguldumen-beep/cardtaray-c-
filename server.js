@@ -9,14 +9,11 @@ const upload = multer({ storage: multer.memoryStorage() });
 app.use(express.json());
 app.use(express.static('public'));
 
-// Config dosyası (Railway'de environment variable, yoksa dosyadan)
 const CONFIG_FILE = './config.json';
 
 function getConfig() {
   try {
-    if (fs.existsSync(CONFIG_FILE)) {
-      return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-    }
+    if (fs.existsSync(CONFIG_FILE)) return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
   } catch(e) {}
   return {
     openai_key: process.env.OPENAI_API_KEY || '',
@@ -26,11 +23,8 @@ function getConfig() {
   };
 }
 
-function saveConfig(cfg) {
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
-}
+function saveConfig(cfg) { fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2)); }
 
-// Admin auth middleware
 function adminAuth(req, res, next) {
   const auth = req.headers['authorization'];
   if (!auth || !auth.startsWith('Basic ')) return res.status(401).json({ error: 'Yetkisiz' });
@@ -40,7 +34,6 @@ function adminAuth(req, res, next) {
   res.status(401).json({ error: 'Kullanıcı adı veya şifre hatalı' });
 }
 
-// Admin: config getir
 app.get('/admin/config', adminAuth, (req, res) => {
   const cfg = getConfig();
   res.json({
@@ -50,10 +43,9 @@ app.get('/admin/config', adminAuth, (req, res) => {
   });
 });
 
-// Admin: config kaydet
 app.post('/admin/config', adminAuth, (req, res) => {
   const cfg = getConfig();
-  const { openai_key, bitrix_url, admin_user, admin_pass, new_pass } = req.body;
+  const { openai_key, bitrix_url, admin_user, new_pass } = req.body;
   if (openai_key && !openai_key.startsWith('***')) cfg.openai_key = openai_key;
   if (bitrix_url !== undefined) cfg.bitrix_url = bitrix_url;
   if (admin_user) cfg.admin_user = admin_user;
@@ -62,7 +54,6 @@ app.post('/admin/config', adminAuth, (req, res) => {
   res.json({ success: true });
 });
 
-// Admin: config sil
 app.delete('/admin/config/:key', adminAuth, (req, res) => {
   const cfg = getConfig();
   if (req.params.key === 'openai_key') cfg.openai_key = '';
@@ -71,7 +62,6 @@ app.delete('/admin/config/:key', adminAuth, (req, res) => {
   res.json({ success: true });
 });
 
-// Admin login check
 app.post('/admin/login', (req, res) => {
   const { user, pass } = req.body;
   const cfg = getConfig();
@@ -82,7 +72,7 @@ app.post('/admin/login', (req, res) => {
   }
 });
 
-// OCR - tarayıcıdan JPEG geliyor
+// OCR
 app.post('/api/scan', upload.single('image'), async (req, res) => {
   try {
     const cfg = getConfig();
@@ -90,7 +80,6 @@ app.post('/api/scan', upload.single('image'), async (req, res) => {
     if (!key) return res.status(400).json({ error: 'OpenAI API key tanımlı değil. Admin panelinden ekleyin.' });
 
     const base64 = req.file.buffer.toString('base64');
-
     const r = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
@@ -116,34 +105,69 @@ app.post('/api/scan', upload.single('image'), async (req, res) => {
   }
 });
 
-// Bitrix24 Deal
+// Deal + Contact + Company oluştur
 app.post('/api/deal', async (req, res) => {
   try {
     const cfg = getConfig();
     const { name, title, company, phone, email, website, dealTitle, bitrixUrl } = req.body;
-    const BITRIX_URL = (bitrixUrl || cfg.bitrix_url || '').replace(/\/$/, '');
-    if (!BITRIX_URL) return res.status(400).json({ error: 'Bitrix24 Webhook URL girilmedi' });
+    const BITRIX = (bitrixUrl || cfg.bitrix_url || '').replace(/\/$/, '');
+    if (!BITRIX) return res.status(400).json({ error: 'Bitrix24 Webhook URL girilmedi' });
 
-    const fields = {
+    const domain = BITRIX.split('/rest/')[0];
+
+    async function bx(method, fields) {
+      const r = await fetch(`${BITRIX}/${method}.json`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fields })
+      });
+      return r.json();
+    }
+
+    // 1. Company oluştur
+    let companyId = null;
+    if (company) {
+      const compRes = await bx('crm.company.add', {
+        TITLE: company,
+        COMPANY_TYPE: 'CUSTOMER',
+        ...(website && { WEB: [{ VALUE: website, VALUE_TYPE: 'WORK' }] })
+      });
+      if (compRes.result) companyId = compRes.result;
+    }
+
+    // 2. Contact oluştur
+    let contactId = null;
+    const nameParts = (name || '').trim().split(' ');
+    const firstName = nameParts[0] || '';
+    const lastName = nameParts.slice(1).join(' ') || '';
+
+    const contactFields = {
+      NAME: firstName,
+      LAST_NAME: lastName,
+      POST: title || '',
+      ...(phone && { PHONE: [{ VALUE: phone, VALUE_TYPE: 'WORK' }] }),
+      ...(email && { EMAIL: [{ VALUE: email, VALUE_TYPE: 'WORK' }] }),
+      ...(website && { WEB: [{ VALUE: website, VALUE_TYPE: 'WORK' }] }),
+      ...(companyId && { COMPANY_ID: companyId })
+    };
+
+    const contRes = await bx('crm.contact.add', contactFields);
+    if (contRes.result) contactId = contRes.result;
+
+    // 3. Deal oluştur
+    const dealFields = {
       TITLE: dealTitle || [name, company].filter(Boolean).join(' - ') || 'Yeni Deal',
       STAGE_ID: 'NEW',
       COMMENTS: [title, website].filter(Boolean).join(' | '),
-      ...(phone && { PHONE: [{ VALUE: phone, VALUE_TYPE: 'WORK' }] }),
-      ...(email && { EMAIL: [{ VALUE: email, VALUE_TYPE: 'WORK' }] })
+      ...(contactId && { CONTACT_ID: contactId }),
+      ...(companyId && { COMPANY_ID: companyId })
     };
 
-    const domain = BITRIX_URL.split('/rest/')[0];
-    const r = await fetch(`${BITRIX_URL}/crm.deal.add.json`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields })
-    });
-
-    const data = await r.json();
-    if (data.result) {
-      res.json({ success: true, dealId: data.result, url: `${domain}/crm/deal/details/${data.result}/` });
+    const dealRes = await bx('crm.deal.add', dealFields);
+    if (dealRes.result) {
+      res.json({ success: true, dealId: dealRes.result, url: `${domain}/crm/deal/details/${dealRes.result}/` });
     } else {
-      res.status(500).json({ error: data.error_description || JSON.stringify(data) });
+      res.status(500).json({ error: dealRes.error_description || JSON.stringify(dealRes) });
     }
   } catch (err) {
     res.status(500).json({ error: err.message });
