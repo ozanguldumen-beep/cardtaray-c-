@@ -40,7 +40,7 @@ app.get('/admin/config', adminAuth, (req, res) => {
     google_vision_key: cfg.google_vision_key ? '***' + cfg.google_vision_key.slice(-6) : '',
     bitrix_url: cfg.bitrix_url || '',
     admin_user: cfg.admin_user,
-    sales_users: (cfg.sales_users || []).map(u => ({ id: u.id, name: u.name, bitrix_id: u.bitrix_id }))
+    sales_users: (cfg.sales_users || []).map(u => ({ id: u.id, name: u.name, bitrix_id: u.bitrix_id, webhook_url: u.webhook_url || '' }))
   });
 });
 
@@ -75,13 +75,13 @@ app.post('/admin/login', (req, res) => {
 
 // Satışçı ekle/güncelle
 app.post('/admin/sales-user', adminAuth, (req, res) => {
-  const { id, name, username, password, bitrix_id } = req.body;
+  const { id, name, username, password, bitrix_id, webhook_url } = req.body;
   if (!name || !username || !password) return res.status(400).json({ error: 'Ad, kullanıcı adı ve şifre zorunlu' });
   const cfg = getConfig();
   if (!cfg.sales_users) cfg.sales_users = [];
   const userId = id || Date.now().toString();
   const idx = cfg.sales_users.findIndex(u => u.id === userId);
-  const user = { id: userId, name, username, password, bitrix_id: bitrix_id || '' };
+  const user = { id: userId, name, username, password, bitrix_id: bitrix_id || '', webhook_url: webhook_url || '' };
   if (idx >= 0) cfg.sales_users[idx] = user;
   else cfg.sales_users.push(user);
   saveConfig(cfg);
@@ -187,8 +187,9 @@ app.post('/api/deal', async (req, res) => {
   try {
     const cfg = getConfig();
     const { name, title, company, phone, email, website, address, dealTitle, customerType, source, note } = req.body;
-    const BITRIX = cfg.bitrix_url.replace(/\/$/, '');
-    if (!BITRIX) return res.status(400).json({ error: 'Bitrix24 Webhook URL tanımlı değil.' });
+    // Önce kullanıcının kendi webhook'u, yoksa genel webhook
+    const BITRIX = (user.webhook_url || cfg.bitrix_url || '').replace(/\/$/, '');
+    if (!BITRIX) return res.status(400).json({ error: 'Bitrix24 Webhook URL tanımlı değil. Admin panelinden ekleyin.' });
     const domain = BITRIX.split('/rest/')[0];
     const [dealTypeId, contactTypeId] = (customerType || '').split('|');
     const assignedBy = user.bitrix_id || '';

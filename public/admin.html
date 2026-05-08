@@ -167,7 +167,7 @@ function renderUsers(users) {
     <div class="user-item">
       <div class="info">
         <div class="name">${u.name}</div>
-        <div class="detail">Bitrix ID: ${u.bitrix_id || 'Atanmamış'}</div>
+        <div class="detail">Bitrix ID: ${u.bitrix_id || 'Atanmamış'} · Webhook: ${u.webhook_url ? '✓ Kişisel' : 'Genel'}</div>
       </div>
       <div class="actions">
         <button class="btn sm" onclick="editUser('${u.id}', '${u.name}', '${u.bitrix_id||''}')">Düzenle</button>
@@ -215,12 +215,13 @@ async function saveUser() {
   const username = document.getElementById('uUsername').value.trim();
   const password = document.getElementById('uPassword').value;
   const bitrix_id = document.getElementById('uBitrixId').value;
+  const webhook_url = document.getElementById('uWebhook').value.trim();
   const el = document.getElementById('userMsg');
 
   if (!name || !username) { el.innerHTML = '<div class="msg err">Ad ve kullanıcı adı zorunlu</div>'; return; }
   if (!id && !password) { el.innerHTML = '<div class="msg err">Yeni kullanıcı için şifre zorunlu</div>'; return; }
 
-  const body = { name, username, bitrix_id };
+  const body = { name, username, bitrix_id, webhook_url };
   if (id) body.id = id;
   if (password) body.password = password;
 
@@ -230,10 +231,11 @@ async function saveUser() {
   if (d.success) { clearUserForm(); showAdmin(); setTimeout(() => el.innerHTML = '', 3000); }
 }
 
-function editUser(id, name, bitrix_id) {
+function editUser(id, name, bitrix_id, webhook_url) {
   document.getElementById('editUserId').value = id;
   document.getElementById('uName').value = name;
   document.getElementById('uBitrixId').value = bitrix_id;
+  document.getElementById('uWebhook').value = webhook_url || '';
   document.getElementById('uPassword').value = '';
   document.getElementById('uUsername').value = '';
   document.getElementById('uPassword').placeholder = 'Boş bırakırsan değişmez';
@@ -247,6 +249,7 @@ function clearUserForm() {
   document.getElementById('uPassword').value = '';
   document.getElementById('uPassword').placeholder = '••••••';
   document.getElementById('uBitrixId').value = '';
+  document.getElementById('uWebhook').value = '';
 }
 
 async function deleteUser(id) {
